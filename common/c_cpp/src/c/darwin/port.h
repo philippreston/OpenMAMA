@@ -182,6 +182,13 @@ struct wtimespec
 
 #define wnanosleep(ts, remain)      nanosleep(((struct timespec*)(ts)),(remain))
 
+/* Add fake clock_gettime function */
+#define CLOCK_REALTIME              0
+#define CLOCK_MONOTONIC             1
+#define CLOCK_PROCESS_CPUTIME_ID    2
+#define GETTIME_SUCCESS             0
+#define GETTIME_FAIL                1
+int clock_gettime (int type, struct timespec * ts);
 
 /* net work utility functions */
 const char* getIpAddress (void);
