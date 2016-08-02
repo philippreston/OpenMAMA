@@ -67,7 +67,7 @@ int wsem_post (wsem_t * sem)
     WSEM_CHECK_NULL (sem);
 
     int result;
-    if (dispatch_semaphore_signal (sem->dsema) == 0)
+    if (dispatch_semaphore_signal (sem->dsema) >= 0)
     {
         OSAtomicIncrement32Barrier (&sem->count);
         result =  WSEM_SUCCEED;
