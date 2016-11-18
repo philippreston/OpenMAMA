@@ -216,6 +216,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="destroyHandle.c" />
+    <ClCompile Include="fileutils.c" />
     <ClCompile Include="windows\environment.c" />
     <ClCompile Include="lex.yy.c" />
     <ClCompile Include="libyywrap.c" />
@@ -237,6 +238,7 @@
     <ClCompile Include="windows\strptime.c" />
     <ClCompile Include="strutils.c" />
     <ClCompile Include="timers.c" />
+    <ClCompile Include="thread.c" />
     <ClCompile Include="wlock.c" />
     <ClCompile Include="wMessageStats.c" />
     <ClCompile Include="windows\wSemaphore.c" />
@@ -244,7 +246,10 @@
     <ClCompile Include="windows\wUuid.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="windows\wombat\port.h" />
     <ClInclude Include="property.h" />
+    <ClInclude Include="wombat\environment.h" />
+    <ClInclude Include="wombat\fileutils.h" />
     <ClInclude Include="wombat\wtable.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

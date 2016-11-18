@@ -19,6 +19,7 @@ InstMamaInclude = \
 	mama/io.h 
 	mama/log.h 
 	mama/mama.h 
+	mama/mamautils.h 
 	mama/marketdata.h 
     mama/middleware.h 
 	mama/msg.h 
@@ -99,6 +100,7 @@ libmama_sources = \
 	listenermsgcallback.c
 	log.c
     mama.c
+    mamautils.c
     mamaStrUtils.c
 	marketdata.c
     plugin.c
@@ -164,6 +166,7 @@ libmama_sources = \
     fieldcache/fieldcachevector.c
 """)
 
+
 """
 Populate mama/c_cpp/src/c/entitlementlibraries.c with array of libraries to be made
 mamdatory to load at runtime.
@@ -176,7 +179,7 @@ if len(env['entitlements']) > 0:
     if len(env['entitlements']) > 1:
         for lib in env['entitlements'][1:]:
             libstr = "{0},\"{1}\"".format(libstr,lib)
-    libstr += '};\n'
+    libstr += ',NULL};\n'
     fp.write(libstr)
 else:
     fp.write("const char* gEntitlementBridges [MAX_ENTITLEMENT_BRIDGES] = {0};\n");

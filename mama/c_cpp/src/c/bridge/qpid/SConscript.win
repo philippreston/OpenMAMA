@@ -12,9 +12,8 @@ libPath = []
 libPath.append('$libdir')
 
 incPath = []
-incPath.append('$libevent_home/WIN32-Code')
-incPath.append('$libevent_home')
-incPath.append('$qpid_home/proton-c/include')
+incPath.append('$libevent_home/include')
+incPath.append('$qpid_home/include')
 incPath.append('#common/c_cpp/src/c/windows')
 incPath.append('#common/c_cpp/src/c')
 incPath.append('#mama/c_cpp/src/c')
@@ -28,17 +27,22 @@ if env['target_arch'] == 'x86_64':
 else:
   archPath = ""
 
-libs.append('libevent')
+libs.append('event')
+
 
 if 'debug' in env['build']:
-  libs.append('qpid-protond')
+  qpidLibName = "qpid-protond"
   buildType = "Debug"
 else:
-  libs.append('qpid-proton')
+  qpidLibName = "qpid-proton"
   buildType = "Release"
 
-libPath.append('%s/proton-c/%s/%s' % (env['qpid_home'], archPath, buildType))
-libPath.append('%s/WIN32-Prj/%s/%s' % (env['libevent_home'], archPath, buildType))
+libs.append(qpidLibName)
+
+libPath.append('%s/lib' % env['qpid_home'])
+libPath.append('%s/lib' % env['libevent_home'])
+
+qpidInstLibs = '%s/bin/%s.dll' % (env['qpid_home'], qpidLibName)
 
 env['CCFLAGS'].append(['/TP', '/WX-'])
 env['CPPPATH'] = incPath
@@ -47,3 +51,6 @@ env.Append(LIBS = libs, LIBPATH=libPath)
 sources = Glob('*.c')
 
 env.InstallLibrary(sources, target)
+
+if 'dynamic' in env['build']:
+    Alias ('install', env.Install('$bindir', qpidInstLibs))

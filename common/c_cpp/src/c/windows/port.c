@@ -40,11 +40,18 @@ typedef struct
 
 
 
-int wthread_set_affinity_mask( wthread_t h, 
+int wthread_set_affinity_mask( wthread_t h, size_t dummy,
                                CPU_AFFINITY_SET* dwThreadAffinityMask)
 {
-    return (int) SetThreadAffinityMask( ((threadContext*) h)->mThread, 
-                                        (DWORD_PTR) dwThreadAffinityMask );
+    if (SetThreadAffinityMask( ((threadContext*) h)->mThread,
+                                (DWORD_PTR) dwThreadAffinityMask ) )
+    {
+        return 0;
+    }
+    else
+    {
+        return 1;
+    }
 }
 
 
@@ -267,29 +274,6 @@ wthread_key_create(wthread_key_t* key, void* val)
  * This can occur if mamaDateTime_setDate() is called from multiple threads.
  */
 static wthread_static_mutex_t envLock = WSTATIC_MUTEX_INITIALIZER;
-
-time_t wtimegm (struct tm *tm) 
-{
-    time_t ret;
-    char *tz;
-    
-    /* Used since the timezone setting needs to be atomic */
-    wthread_static_mutex_lock(&envLock);
-
-    tz = environment_getVariable("TZ");
-    environment_setVariable("TZ", "UTC");
-    tzset();
-    ret = mktime(tm);
-    if (tz)
-        environment_setVariable("TZ", tz);
-    else
-        environment_deleteVariable("TZ");
-    tzset();
-
-    wthread_static_mutex_unlock(&envLock);
-
-    return ret;
-}
 
 int wnanosleep (struct wtimespec* ts, struct timnespec* remain)
 {

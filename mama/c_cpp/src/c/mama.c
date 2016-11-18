@@ -27,6 +27,7 @@
 #include "wombat/environment.h"
 #include "wombat/strutils.h"
 #include "wombat/wInterlocked.h"
+#include "wombat/thread.h"
 #include "bridge.h"
 
 #include <mama/mama.h>
@@ -52,6 +53,7 @@
 #define PROPERTY_FILE "mama.properties"
 #define WOMBAT_PATH_ENV "WOMBAT_PATH"
 #define MAMA_PROPERTY_BRIDGE "mama.bridge.provider"
+#define MAMA_PROPERTY_THREAD_AFFINITY "mama.thread_affinity."
 #define MAMA_ENTITLEMENT_LIB_FILEPATTERN "mamaent%s"
 #define DEFAULT_STATS_INTERVAL 60
 
@@ -61,9 +63,9 @@
 
 extern void initReservedFields (void);
 
-
 mamaEntitlementCallbacks  gEntitlementCallbacks;
 extern const char*        gEntitlementBridges[MAX_ENTITLEMENT_BRIDGES];
+
 /* Sats Configuration*/
 int gLogQueueStats          = 1;
 int gLogTransportStats      = 1;
@@ -103,7 +105,7 @@ mamaStat                gPublisherSend;
 mamaStat                gPublisherInboxSend;
 mamaStat                gPublisherReplySend;
 
-mama_bool_t gAllowMsgModify = 0;
+mama_bool_t gAllowMsgModify = 1;
 
 mama_status mama_statsInit (void);
 mama_status mama_setupStatsGenerator (void);
@@ -115,7 +117,6 @@ wproperty_t             gProperties      = 0;
 static mamaPayloadBridge    gDefaultPayload = NULL;
 
 static wthread_key_t last_err_key;
-
 
 /**
  * struct mamaApplicationGroup
@@ -246,6 +247,15 @@ mama_loadPayloadBridgeInternal  (mamaPayloadBridge* impl,
 
 mama_status
 mama_loadEntitlementBridgeInternal  (const char* name);
+
+static void
+threadPropertiesCb (const char* name, const char* value, void* closure);
+
+mama_bool_t
+mama_areVersionsCompatibleInternal (versionInfo mamaVer, versionInfo bridgeVer);
+
+void
+mama_normalizeMamaBridgeInterfaceVersionInternal (versionInfo* version);
 
 MAMAExpDLL
 void
@@ -815,6 +825,39 @@ mama_openWithPropertiesCount (const char* path,
     initReservedFields();
     mama_loginit();
 
+    /* Gather global named thread properties. */
+    properties_ForEach (mamaInternal_getProperties(), threadPropertiesCb, NULL);
+
+    /* Load all specified Entitlements Bridges. This is done before payloads/middlewares
+     * as an entitlementsBridge is necessary for transport_create().
+     */
+    while (NULL != gEntitlementBridges[bridgeIdx])
+    {
+        mama_log(MAMA_LOG_LEVEL_FINE,
+                 "Trying to load %s entitlement bridge.",
+                 gEntitlementBridges[bridgeIdx]);
+
+        result = mama_loadEntitlementBridgeInternal(gEntitlementBridges[bridgeIdx]);
+
+        if (MAMA_STATUS_OK != result)
+        {
+            mama_log(MAMA_LOG_LEVEL_SEVERE,
+                     "mama_openWithProperties(): "
+                     "Could not load %s entitlements library.",
+                     gEntitlementBridges[bridgeIdx]);
+
+            wthread_static_mutex_unlock (&gImpl.myLock);
+            mama_close();
+
+            if (count)
+                *count = gImpl.myRefCount;
+
+            return result;
+        }
+        bridgeIdx++;
+    }
+
+
     /* Check mama.properteis for default payload bridge to use when calling mamaMsg_create. 
      * The payload bridge will be loaded before any middleware or payload bridges.
      */
@@ -865,7 +908,7 @@ mama_openWithPropertiesCount (const char* path,
                     if (!gImpl.payloads.byChar[payloadId[i]])
                     {
                         mamaPayloadBridge payloadImpl = NULL;
-                        mama_loadPayloadBridge (&payloadImpl, *payloadName);
+                        mama_loadPayloadBridge (&payloadImpl, payloadName[i]);
                     }
                     i++;
                 }
@@ -883,48 +926,19 @@ mama_openWithPropertiesCount (const char* path,
     }
 
     prop = properties_Get (gProperties, "mama.message.allowmodify");
-    if (prop && strtobool (prop))
+    if (prop && (!strtobool (prop)))
     {
-        gAllowMsgModify = 1;
-        mama_log (MAMA_LOG_LEVEL_FINE, "mama.message.allowmodify: true");
+        gAllowMsgModify = 0;
+        mama_log (MAMA_LOG_LEVEL_FINE, "mama.message.allowmodify: false");
     }
 
     if (strlen( (char*) gEntitlementBridges))
     {
-    	mama_log (MAMA_LOG_LEVEL_FINE, "%s (entitled)",mama_version);
+        mama_log (MAMA_LOG_LEVEL_FINE, "%s (entitled)",mama_version);
     }
     else
     {
-    	mama_log (MAMA_LOG_LEVEL_FINE, "%s (non entitled)",mama_version);
-    }
-
-    /* Load all specified Entitlements Bridges. This is done before payloads/middlewares
-     * as an entitlementsBridge is necessary for transport_create().
-     */
-    while (NULL != gEntitlementBridges[bridgeIdx])
-    {
-        mama_log(MAMA_LOG_LEVEL_FINE,
-                 "Trying to load %s entitlement bridge.",
-                 gEntitlementBridges[bridgeIdx]);
-
-        result = mama_loadEntitlementBridgeInternal(gEntitlementBridges[bridgeIdx]);
-
-        if (MAMA_STATUS_OK != result)
-        {
-            mama_log(MAMA_LOG_LEVEL_SEVERE,
-                     "mama_openWithProperties(): "
-                     "Could not load %s entitlements library.",
-                     gEntitlementBridges[bridgeIdx]);
-
-            wthread_static_mutex_unlock (&gImpl.myLock);
-            mama_close();
-
-            if (count)
-                *count = gImpl.myRefCount;
-
-            return result;
-        }
-        bridgeIdx++;
+        mama_log (MAMA_LOG_LEVEL_FINE, "%s (non entitled)",mama_version);
     }
 
 
@@ -977,12 +991,68 @@ mama_openWithPropertiesCount (const char* path,
 
     mama_statsInit();
 
-
     gImpl.myRefCount++;
     if (count)
         *count = gImpl.myRefCount;
     wthread_static_mutex_unlock (&gImpl.myLock);
     return result;
+}
+
+static void
+threadPropertiesCb (const char* name, const char* value, void* closure)
+{
+    wombatThreadStatus status;
+
+    if (strncmp (name, MAMA_PROPERTY_THREAD_AFFINITY,
+                 strlen (MAMA_PROPERTY_THREAD_AFFINITY)) == 0)
+    {
+        const char*      threadName = name + strlen(MAMA_PROPERTY_THREAD_AFFINITY);
+        CPU_AFFINITY_SET affinity;
+        int              i;
+        char*            delimiter;
+        char*            str = (char*) value;
+
+        for (i = 0; i < sizeof(CPU_AFFINITY_SET); i++)
+        {
+            /* Clear the affinity set. */
+            ((char*) (&affinity))[i] = 0x00;
+        }
+
+        for(;;)
+        {
+            i = strtoul(str, &delimiter, 10);
+
+            if (i < 8 * sizeof(CPU_AFFINITY_SET))
+            {
+                CPU_SET(i, &affinity);
+            }
+            if (*delimiter != ',')
+            {
+                if (*delimiter != '\0') return;
+                break;
+            }
+            str = ++delimiter;
+        }
+
+        status = wombatThread_setAffinity (threadName, &affinity);
+
+        if (status != WOMBAT_THREAD_OK)
+        {
+            mama_log(MAMA_LOG_LEVEL_NORMAL,
+                "threadPropertiesCb: "
+                " Unable to set affinity for thread '%s' to value '%s'",
+                threadName,
+                value);
+        }
+        else
+        {
+            mama_log(MAMA_LOG_LEVEL_NORMAL,
+                "threadPropertiesCb: "
+                "Set affinity for thread '%s' to value '%s'",
+                threadName,
+                value);
+        }
+    }
 }
 
 mama_status
@@ -1228,13 +1298,13 @@ mama_getVersion (mamaBridge bridgeImpl)
     /*Delegate the call to the bridge specific implementation*/
     if (strlen( (char*) gEntitlementBridges))
     {
-    	snprintf(mama_ver_string,sizeof(mama_ver_string),"%s (%s) (entitled)",
-    			mama_version, impl->bridgeGetVersion ());
+        snprintf(mama_ver_string,sizeof(mama_ver_string),"%s (%s) (entitled)",
+                mama_version, impl->bridgeGetVersion ());
     }
     else
     {
-    	snprintf(mama_ver_string,sizeof(mama_ver_string),"%s (%s) (non entitled)",
-    			mama_version, impl->bridgeGetVersion ());
+        snprintf(mama_ver_string,sizeof(mama_ver_string),"%s (%s) (non entitled)",
+                mama_version, impl->bridgeGetVersion ());
     }
 
     return mama_ver_string;
@@ -1299,12 +1369,15 @@ mama_closeCount (unsigned int* count)
          */
         for (middleware = 0; middleware != gImpl.middlewares.count; ++middleware)
         {
+            char threadname[256];
             mamaMiddlewareLib* middlewareLib =
                         (mamaMiddlewareLib*)gImpl.middlewares.byIndex[middleware];
 
             if (middlewareLib && middlewareLib->bridge)
             {
                 mamaBridgeImpl_stopInternalEventQueue (middlewareLib->bridge);
+                snprintf (threadname, 256, "mama_%s_default", middlewareLib->bridge->bridgeGetName());
+                wombatThread_destroy (threadname);
             }
         }
 
@@ -1385,6 +1458,7 @@ mama_closeCount (unsigned int* count)
             mamaStat_destroy (gPublisherReplySend);
             gPublisherReplySend = NULL;
         }
+
         if (gGlobalStatsCollector)
         {
             if (gStatsGenerator)
@@ -1631,7 +1705,9 @@ mama_startBackgroundHelper (mamaBridge   bridgeImpl,
                             void*        closure)
 {
     struct startBackgroundClosure*  closureData;
-    mamaBridgeImpl* impl = (mamaBridgeImpl*)bridgeImpl;
+    wombatThread        thread;
+    wombatThreadStatus  threadStatus = WOMBAT_THREAD_OK;
+    char                threadname[256];
 
     if (!bridgeImpl)
     {
@@ -1664,10 +1740,26 @@ mama_startBackgroundHelper (mamaBridge   bridgeImpl,
     closureData->mBridgeImpl     = bridgeImpl;
     closureData->mClosure        = closure;
 
-    if (0 != wthread_create(&impl->mStartBackgroundThread, NULL, mamaStartThread, (void*) closureData))
+    snprintf (threadname, 256, "mama_%s_default", bridgeImpl->bridgeGetName());
+
+    threadStatus = wombatThread_create(threadname,
+                            &thread,
+                            NULL,
+                            mamaStartThread,
+                            (void*) closureData);
+
+    if (threadStatus == WOMBAT_THREAD_PROPERTY)
     {
-        mama_log (MAMA_LOG_LEVEL_ERROR, "Could not start background MAMA "
-                  "thread.");
+        /* Failed to set the thread affinity, but the thread has been created
+         * so log an error but carry on. */
+        mama_log (MAMA_LOG_LEVEL_ERROR, "mama_startBackgroundHelper(): Could not "
+                  "apply thread affinity to "
+                  "background MAMA thread.");
+    }
+    else if (threadStatus != WOMBAT_THREAD_OK)
+    {
+        mama_log (MAMA_LOG_LEVEL_ERROR, "mama_startBackgroundHelper(): Could not "
+                  "start background MAMA thread.");
         return MAMA_STATUS_SYSTEM_ERROR;
     }
 
@@ -1687,6 +1779,7 @@ mama_startBackgroundEx (mamaBridge bridgeImpl, mamaStopCBEx exCallback, void* cl
     /* Passing this NULL tells mama_StartBackgroundHelper to use new functionality */
     return mama_startBackgroundHelper (bridgeImpl, NULL, exCallback, closure);
 }
+
 /**
  * Stop processing messages
  */
@@ -1981,7 +2074,7 @@ mama_loadPayloadBridgeInternal  (mamaPayloadBridge* impl,
                   "Failed to initialise payload bridge [%s]. "
                   "Cannot find function %s in implementation library.",
                   payloadName,
-                  payloadImplName);
+                  initFuncName);
         goto error_handling_impl;
     }
 
@@ -2045,21 +2138,20 @@ mama_loadPayloadBridgeInternal  (mamaPayloadBridge* impl,
         goto error_handling_impl_allocated;
     }
 
-    /* Fail to load if the major and minor versions don't match. Only do this
-     * check in OpenMAMA until versions are consolidated. */
-    if ((2 == gImpl.version.mMajor) &&
-            (gImpl.version.mMajor != bridgeMamaVersion.mMajor ||
-             gImpl.version.mMinor != bridgeMamaVersion.mMinor))
+    /* Fail to load if bridge and API versions are incompatible */
+    if (! mama_areVersionsCompatibleInternal (gImpl.version, bridgeMamaVersion))
     {
         mama_log (MAMA_LOG_LEVEL_ERROR,
                   "mama_loadPayloadBridgeInternal (): "
                   "Failed to initialise payload bridge [%s]. "
-                  "MAMA Runtime Version v%d.%d.x not compatible with bridge's compile version v%d.%d.x",
+                  "MAMA Runtime Version v%d.%d.%d not compatible with bridge's compile version v%d.%d.%d",
                   payloadName,
                   gImpl.version.mMajor,
                   gImpl.version.mMinor,
+                  gImpl.version.mRelease,
                   bridgeMamaVersion.mMajor,
-                  bridgeMamaVersion.mMinor);
+                  bridgeMamaVersion.mMinor,
+                  bridgeMamaVersion.mRelease);
         goto error_handling_impl_allocated;
     }
 
@@ -2566,21 +2658,20 @@ mama_loadBridgeWithPathInternal (mamaBridge* impl,
         goto error_handling_impl_allocated;
     }
 
-    /* Fail to load if the major and minor versions don't match. Only do this
-     * check in OpenMAMA until versions are consolidated. */
-    if ((2 == gImpl.version.mMajor) &&
-            (gImpl.version.mMajor != bridgeMamaVersion.mMajor ||
-             gImpl.version.mMinor != bridgeMamaVersion.mMinor))
+    /* Fail to load if bridge and API versions are incompatible */
+    if (! mama_areVersionsCompatibleInternal (gImpl.version, bridgeMamaVersion))
     {
         mama_log (MAMA_LOG_LEVEL_ERROR,
                   "mama_loadBridge (): "
                   "Failed to initialise middleware bridge [%s]. "
-                  "MAMA Runtime Version v%d.%d.x not compatible with bridge's compile version v%d.%d.x",
+                  "MAMA Runtime Version v%d.%d.%d not compatible with bridge's compile version v%d.%d.%d",
                   middlewareName,
                   gImpl.version.mMajor,
                   gImpl.version.mMinor,
+                  gImpl.version.mRelease,
                   bridgeMamaVersion.mMajor,
-                  bridgeMamaVersion.mMinor);
+                  bridgeMamaVersion.mMinor,
+                  bridgeMamaVersion.mRelease);
         goto error_handling_impl_allocated;
     }
 
@@ -3049,4 +3140,64 @@ mamaInternal_setMetaProperty (const char* name, const char* value)
                   gImpl.internalProperties, name, value, existingValue);
         return MAMA_STATUS_NOMEM;
     }
+}
+
+/* NB copy rather than reference - this is intentional because we are going to
+ * be modifying these values to normalized versions */
+mama_bool_t mama_areVersionsCompatibleInternal (versionInfo mamaVer, versionInfo bridgeVer)
+{
+    /* Normalize bridge versions with standard major / minor versions */
+    mama_normalizeMamaBridgeInterfaceVersionInternal (&mamaVer);
+    mama_normalizeMamaBridgeInterfaceVersionInternal (&bridgeVer);
+
+    /* If major and minor versions match, they are compatible */
+    if (mamaVer.mMajor == bridgeVer.mMajor && mamaVer.mMinor == bridgeVer.mMinor)
+    {
+        return 1;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+/* This function is destructive and will modify the versionInfo provided to
+ * return a bridge compatibility version (i.e. 6.0, 6.1 etc)
+   +-----------------+------------------------------+
+   | (O)MAMA Version | Normalized Interface Version |
+   +-----------------+------------------------------+
+   | 2.2.x           | 6.0.0                        |
+   | 2.3.x           | 6.0.0                        |
+   | 6.0.x (x <  7)  | 6.0.0                        |
+   | 2.4.x           | 6.1.0                        |
+   | 6.0.x (x >= 7)  | 6.1.0                        |
+   | 6.1.x           | 6.1.0                        |
+   | 6.2.x (future)  | 6.2.0                        |
+   +-----------------+------------------------------+
+ */
+void mama_normalizeMamaBridgeInterfaceVersionInternal (versionInfo* version)
+{
+    /* 2.3.x is equivalent to all releases prior to MAMA 6.0.7 */
+    if (version->mMajor == 2 && version->mMinor < 4)
+    {
+        version->mMajor = 6;
+        version->mMinor = 0;
+    }
+
+    /* 6.0.7+ is equivalent in bridge compatibility to 6.1.x */
+    if (version->mMajor == 6 && version->mMinor == 0 && version->mRelease >= 7)
+    {
+        version->mMajor = 6;
+        version->mMinor = 1;
+    }
+
+    /* 2.4.x is equivalent to 6.1 */
+    if (version->mMajor == 2 && version->mMinor == 4)
+    {
+        version->mMajor = 6;
+        version->mMinor = 1;
+    }
+
+    /* This is irrelevant at this point so blank for clarity */
+    version->mRelease = 0;
 }

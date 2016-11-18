@@ -42,6 +42,7 @@ subscriptiontype.c
 listenermsgcallback.c
 log.c
 mama.c
+mamautils.c
 middleware.c
 msgfield.c
 msg.c
@@ -102,7 +103,7 @@ if len(env['entitlements']) > 0:
     if len(env['entitlements']) > 1:
         for lib in env['entitlements'][1:]:
             libstr = "{0},\"{1}\"".format(libstr,lib)
-    libstr += '};\n'
+    libstr += ',NULL};\n'
     fp.write(libstr)
 else:
     fp.write("const char* gEntitlementBridges [MAX_ENTITLEMENT_BRIDGES] = {0};\n");

@@ -66,8 +66,12 @@ extern "C"
 #define MAMA_DEFAULT_RETRIES       2
 #define MAMA_DEFAULT_TIMEOUT       30.0f
 #define MAMA_MAX_SYMBOL_LEN        128
+#define MAMA_MAX_ROOT_LEN          5 // e.g. _MDDD
 #define MAMA_MAX_SOURCE_LEN        64
 #define MAMA_MAX_TRANSPORT_LEN     64
+// This is source + symbol + root + 2 delimiting periods
+#define MAMA_MAX_TOTAL_SYMBOL_LEN  (MAMA_MAX_SYMBOL_LEN + MAMA_MAX_SOURCE_LEN + \
+                                    MAMA_MAX_ROOT_LEN + 2)
 
     /**
      * \mainpage Middleware Agnostic Messaging API (MAMA) C API
@@ -648,14 +652,14 @@ extern "C"
     mama_setBridgeInfoCallback (mamaBridge         bridgeImpl,
                                 bridgeInfoCallback callback);
     /**
-     * Add a user stats collector 
+     * Add a user stats collector
      */
     MAMAExpDLL
     extern mama_status
     mama_addStatsCollector (mamaStatsCollector  statsCollector);
 
     /**
-     * Remove a user stats collector 
+     * Remove a user stats collector
      */
     MAMAExpDLL
     extern mama_status

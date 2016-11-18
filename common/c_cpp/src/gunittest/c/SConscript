@@ -27,8 +27,10 @@ else:
 env.Append(LIBPATH=libpath, LIBS=libs, CPPPATH=incpath)
 
 sources = Split("""
+port.cpp
 queuetest.cpp
 timertest.cpp
+utiltest.cpp
 """)
 
 MainUnitTest = env.Object( '../MainUnitTestC.cpp' ) 

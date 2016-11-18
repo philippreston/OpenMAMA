@@ -171,8 +171,9 @@ static mamaTimeZone         gTimeZone           = NULL;
 static uint32_t             gRun                = 1;
 
 static int                  gInitials       = 0;
-static int                  gInitialDelay       = 0;
-static int                  gUsePlayback	    = 0;
+static int                  gInitialDelay   = 0;
+static int                  gUsePlayback    = 0;
+static long int             gRewindCount    = 0;
 static char*          gPlaybackFilename   = NULL;
 static mamaPlaybackFileParser gFileParser		= NULL;
 static wtable_t 			gPublisherTable		= NULL;
@@ -205,6 +206,7 @@ static const char *         gUsageString[]      =
 "      [-burstLow X]        The minimum multiple of the current rate which the rate will burst to. Default is 5.",
 "      [-d msgDelta]        The number of bytes to change message by i.e. msg will be -l +- -d; default delta is 0.",
 "      [-dupTopics]         Duplicate topics across available transports.",
+"      [-f symfile]         File containing a newline delimited list of symbols to publish over (required for -playback).",
 "      [-fifo]              Set the scheduler as first in first out.",
 "      [-flat]              Publish a predefined message with sequence numbers updated.",
 "      [-l bytes]           The published message size in bytes; default is 200B.",
@@ -212,11 +214,13 @@ static const char *         gUsageString[]      =
 "      [-m middleware]      The middleware to use [wmw/lbm/tibrv]; default is wmw.",
 "      [-numTopics topics]  The number of topics to create in the form MAMA_TOPIC00 MAMA_TOPIC01 etc",
 "                           uses [-s topic] as root.",
-"      [-priority X ]       Set the process's scheduler priority to X.",
+"      [-playback pbfile]   MAMA format playback file to replay while publishing (also requires -f).",
+"      [-priority X]        Set the process's scheduler priority to X.",
 "      [-random]            Randomise rate between randomLow and randomHigh values at randomInterval second intervals.",
 "      [-randomHigh X]      Upper rate for random range. Default is 500000 msgs/sec.",
 "      [-randomInterval X]  Interval (secs) in which to randomize rate. Default is 5 sec.",
 "      [-randomLow X]       Lower rate for random range. Default is 100000 msgs/sec.",
+"      [-rewind X]          If using playback, the number of times to rewind it (-1 for infinite). Default is 0.",
 "      [-rdtsc]             Use the CPU Time Stamp Counter for calculation of transport latency.",
 "      [-rr]                Set scheduler as round robin.",
 "      [-rt]                Use CLOCK_REALTIME rather than CLOCK_PROCESS_CPUTIME_ID for stamping and throttling.",
@@ -1257,7 +1261,7 @@ static void initializePublishers
     if (gUsePlayback)
     {
     	gPublisherTable = wtable_create ("PublisherTable", gNumPubs/10);
-		mamaMsg_create(&gCachedMsg); 
+		mamaMsg_create(&gCachedMsg);
     }
     else
     {
@@ -1379,7 +1383,7 @@ static void initializePublishers
                                                       &callbacks,
                                                       "_MD.REPLAY",
                                                       NULL));
-        
+
         MAMA_CHECK(mamaMsg_create(&gInitialMsg));
         MAMA_CHECK(mamaMsg_addU8(gInitialMsg, NULL,  MamaFieldMsgType.mFid, MAMA_MSG_TYPE_RECAP));
 		MAMA_CHECK(mamaMsg_addI32(gInitialMsg, NULL, MamaFieldMsgStatus.mFid, MAMA_MSG_STATUS_OK));
@@ -1397,9 +1401,9 @@ static void initializePublishers
 static mama_status initilizeFlatMessage(void)
 {
     mama_status status = MAMA_STATUS_OK;
-    
+
     mamaMsg_create(&gFlatMsg);
-   
+
     status = mamaMsg_addU8  (gFlatMsg, "MdMsgType", 1, 13);
     status = mamaMsg_addU8  (gFlatMsg, "MdMsgStatus", 2, 0);
     status = mamaMsg_addU32 (gFlatMsg, "MdSeqNum", 10, 2);
@@ -1488,6 +1492,26 @@ static void initializeMessages
     MAMA_CHECK (mamaDateTime_destroy (dateTime));
 }
 
+static void rewindPlayback()
+{
+    static long int rewindCount = 0;
+
+    /* If we're not rewinding infinitely or we have rewound enough times */
+    if (gRewindCount >= 0 && rewindCount >= gRewindCount)
+    {
+        printf ("End of playback reached, exiting...\n");
+        exit(0);
+    }
+    else
+    {
+        printf ("End of playback reached, rewinding (%ld of %ld)...\n",
+                ++rewindCount,
+                gRewindCount);
+        /* Rewind the playback parser */
+        mamaPlaybackFileParser_rewindFile (gFileParser);
+    }
+}
+
 static void publishMessage
 (
     uint32_t        pubIndex,
@@ -1505,8 +1529,8 @@ static void publishMessage
 		int i = 0, found = 0;
 		if (!mamaPlaybackFileParser_getNextHeader(gFileParser, &headerString))
 		{
-
-			exit(0);
+			rewindPlayback ();
+			return;
 		}
 		tempPointer = headerString;
 		while (found < 3)
@@ -1545,8 +1569,8 @@ static void publishMessage
 		if (!mamaPlaybackFileParser_getNextMsg (gFileParser,
 		                                                &msg))
 		{
-
-					exit(0);
+			rewindPlayback ();
+			return;
 		}
 
 		mamaMsg_applyMsg(gCachedMsg, msg);
@@ -1574,7 +1598,7 @@ static void publishMessage
                                   pub->mMsgNum++))
 	{
 		printf ("INFO - update seqnum failed - %s \n", mamaMsg_toString(msg));
-		return;		
+		return;
 	}
 
     pthread_mutex_lock(&gMutex);
@@ -1588,7 +1612,7 @@ static void publishMessage
 	{
 		printf ("INFO - update sendtime failed - %s\n", mamaMsg_toString(msg));
     pthread_mutex_unlock(&gMutex);
-		return;		
+		return;
 	}
 
 	/*Publish the message*/
@@ -1605,7 +1629,7 @@ static void publishMessageRdtsc
 {
     mamaMsg msg = NULL;
     publisher* pub = &gPublisherList[pubIndex];
-    
+
     if (gFlat)
     {
         msg=gFlatMsg;
@@ -1614,7 +1638,7 @@ static void publishMessageRdtsc
     {
         msg=pub->mMamaMsgs[msgSample];
     }
-    
+
     MAMA_CHECK(mamaMsg_updateU32 (msg,
                                   "NULL",
                                   SEQ_NUM_FID,
@@ -1813,7 +1837,7 @@ static void parseCommandLine
 				const char * filename = argv[i+1];
 				if ((fp = fopen(filename, "r")) == (FILE*)NULL)
 					exit(1);
-				
+
 				while (fgets (charbuf, 1023, fp))
 				{
 					char *c= charbuf;
@@ -1843,7 +1867,7 @@ static void parseCommandLine
 
 					*c = '\0';
 
-					
+
                 	gSymbolList[gNumSymbols] = strdup (charbuf);
                 	gNumSymbols++;
 				}
@@ -1965,6 +1989,12 @@ static void parseCommandLine
 				gUsePlayback = 1;
                 i += 2;
             }
+            else if (strcmp ("-rewind", argv[i]) == 0)
+            {
+                gRewindCount = atol(argv[i+1]);
+                i += 2;
+            }
+
             else
             {
                 fprintf(stderr,"ERROR: Commandline option %s not recognised. Skipping\n",argv[i]);
